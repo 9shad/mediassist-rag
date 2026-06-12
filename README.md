@@ -194,16 +194,22 @@ python scripts/ingest.py --dry-run
 
 ## Screenshots
 
+### Login Screen
 ![Login Screen](./screenshots/login.png)
 
+### Chat Interface
 ![Chat Interface](./screenshots/chat-interface.png)
 
+### Streaming Response
 ![Streaming Response](./screenshots/streaming.png)
 
+### Follow-up Suggestions
 ![Follow-up Suggestions](./screenshots/streaming-followup.png)
 
+### History Sidebar
 ![History Sidebar](./screenshots/history-sidebar.png)
 
+### Light Mode with SQL-RAG
 ![Light Mode with SQL-RAG](./screenshots/light-mode-sql-rag.png)
 
 ## Demo Credentials
