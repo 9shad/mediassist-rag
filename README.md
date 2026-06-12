@@ -194,14 +194,17 @@ python scripts/ingest.py --dry-run
 
 ## Screenshots
 
-> ```markdown
-> ![Login Screen](./screenshots/login.png)
-> ![Chat Interface](./screenshots/chat-interface.png)
-> ![Response with Followup Suggestions](./screenshots/streaming.png)
-> ![Response with Followup Suggestions](./screenshots/streaming-followup.png)
-> ![History Sidebar](./screenshots/history-sidebar.png)
-> ![Light Mode with SQL-RAG](./screenshots/light-mode-sql-rag.png)
-> ```
+![Login Screen](./screenshots/login.png)
+
+![Chat Interface](./screenshots/chat-interface.png)
+
+![Streaming Response](./screenshots/streaming.png)
+
+![Follow-up Suggestions](./screenshots/streaming-followup.png)
+
+![History Sidebar](./screenshots/history-sidebar.png)
+
+![Light Mode with SQL-RAG](./screenshots/light-mode-sql-rag.png)
 
 ## Demo Credentials
 
