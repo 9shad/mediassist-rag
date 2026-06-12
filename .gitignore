@@ -1,0 +1,56 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+venv/
+.venv/
+*.egg
+*.pyc
+*.pyo
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Node
+node_modules/
+.next/
+npm-debug.log*
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# Docker
+.docker/
+
+# Logs
+logs/
+*.log
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Qdrant storage (created at runtime)
+qdrant_storage/
+
+# Hugging Face cache (downloaded models)
+.huggingface/
+.cache/huggingface/
+
+# Build outputs
+*.egg-info/
+dist/
+build/
+DISCORD_POST.md
+ARCHITECTURE_DIAGRAM.txt
+mediassist_data.zip
+MediBot_Assignment_Instructions.pdf
