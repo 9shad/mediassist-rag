@@ -200,7 +200,7 @@ python scripts/ingest.py --dry-run
 > ![Response with Followup Suggestions](./screenshots/streaming.png)
 > ![Response with Followup Suggestions](./screenshots/streaming-followup.png)
 > ![History Sidebar](./screenshots/history-sidebar.png)
-> ![Light Mode](./screenshots/light-mode.png)
+> ![Light Mode with SQL-RAG](./screenshots/light-mode-sql-rag.png)
 > ```
 
 ## Demo Credentials
