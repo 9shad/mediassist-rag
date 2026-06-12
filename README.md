@@ -322,14 +322,80 @@ SQL RAG is restricted to `billing_executive` and `admin` roles only.
 - **Token usage** — per-response token count displayed as a small footer on each bot message
 - **Login screen** — themed dropdown for all 5 demo users with preview card
 
+## Context Management
+
+MediBot maintains multi-turn conversation context through a **three-layer architecture** that balances token budgets with information retention.
+
+### Three Layers
+
+| Layer | What | Scope | Purpose |
+|---|---|---|---|
+| **Sliding Window** | Last 8 Q&A turns verbatim | Immediate conversation | Handles pronouns, referents, follow-ups ("what about the other option?") |
+| **Vector Memory** | Top 3 semantically similar past exchanges | Entire history | Finds relevant information from far back ("remember when we discussed X?") |
+| **Running Summary** | LLM-condensed summary of evicted content | Evicted turns | Bridges gaps when both sliding window and vector search miss context |
+
+### How It Works
+
+```
+Every user query with conversation_id:
+  ┌─ 1. Load history + embeddings + summary from chat DB
+  ├─ 2. Extract sliding window (last N turns)
+  ├─ 3. Embed current question → cosine similarity vs all prior Qs → top K
+  ├─ 4. Deduplicate vector results against sliding window
+  ├─ 5. Prepend running summary (if any)
+  ├─ 6. Merge all within 8K token budget
+  ├─ 7. Send to LLM with RAG context
+  └─ 8. After response: save turn + check if condensation needed
+```
+
+### Token Budget
+
+```
+┌─────────────────────────────────────────────────┐
+│  System prompt (~50)                             │
+│  RAG context (~4000) — top 3 doc chunks          │
+│  Running summary (~300)                          │
+│  Vector memory (~1000) — top 3 past exchanges    │
+│  Sliding window (~2000) — last 8 turns           │
+│  Current question (~50)                          │
+│  Reserved for output (~500)                      │
+├─────────────────────────────────────────────────┤
+│  Total: ~7900 (under 8K default)                │
+└─────────────────────────────────────────────────┘
+```
+
+### Condensation
+
+When total tokens exceed 80% of `CONTEXT_MAX_TOKENS`, the oldest Q&A pairs are evicted and condensed into the running summary by the LLM:
+
+```
+Before: [summary] [t1] [t2] [t3] [t4] [t5] [t6] [t7] [t8] ← 9K tokens
+           │      └─evict─┘
+After:  [summary'] [t3] [t4] [t5] [t6] [t7] [t8]           ← 6K tokens
+```
+
+The summary is **incremental** — the existing summary is passed alongside new exchanges to produce a merged result.
+
+### Guardrails
+
+| Guardrail | Setting |
+|---|---|
+| Max total context tokens | `CONTEXT_MAX_TOKENS` (default 8000) |
+| Sliding window turns | `SLIDING_WINDOW_TURNS` (default 8) |
+| Vector memory top K | `VECTOR_MEMORY_TOP_K` (default 3) |
+| Summary max tokens | `SUMMARY_MAX_TOKENS` (default 300) |
+| Deduplication | Vector results skip exchanges already in sliding window |
+| Similarity threshold | 0.3 cosine — weak matches filtered |
+
+See [`notes/11-context-management.md`](./notes/11-context-management.md) for implementation details and the full lifecycle.
+
 ## Tool Substitutions
 
 | Required | Used | Reason |
-|---|---|---|---|
-| Docling | PyMuPDF (fitz) | Docling had build dependency issues with Python 3.14 (no pre-built wheels). PyMuPDF provides equivalent structural parsing with zero build deps. |
-| Sentence-Transformers | Sentence-Transformers | Runs locally via `intfloat/multilingual-e5-large-instruct` in Docker (Python 3.12 has full PyTorch wheel support). |
-| API-based reranker | Local Cross-Encoder | Runs locally via `BAAI/bge-reranker-v2-m3` with sentence-transformers — no API key or GPU required. |
+|---|---|---|
+| Docling | PyMuPDF (fitz) | Docling had build dependency issues with Python 3.14 (no pre-built wheels). PyMuPDF provides equivalent parsing with zero build deps. |
 | API-based embeddings | Local sentence-transformers | No API key needed — `intfloat/multilingual-e5-large-instruct` runs entirely locally. |
+| API-based reranker | Local Cross-Encoder | No API key needed — `BAAI/bge-reranker-v2-m3` with sentence-transformers on CPU. |
 
 ## In-Depth Documentation
 
