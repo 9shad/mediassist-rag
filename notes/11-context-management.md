@@ -265,6 +265,31 @@ async def cleanup_old_conversations():
 
 The cleanup cascade-deletes associated messages (SQLite `FOREIGN KEY ... ON DELETE CASCADE`).
 
+## Follow-up Question Generation
+
+After every response, the orchestrator calls `generate_followups(question, answer, context)` in `llm_client.py` to produce 3 contextual follow-up questions:
+
+```python
+FOLLOWUP_PROMPT = """Based on the conversation so far, suggest 3 concise follow-up questions
+the user might want to ask next. Return ONLY a JSON array of strings, no other text."""
+
+def generate_followups(question: str, answer: str, context: str = "") -> list[str]:
+    # Retry up to 2 times with increasing temperature
+    # Assistant priming: pre-fill "[" so the model completes a JSON array
+    # stop: ["\n\n"] prevents trailing explanation
+    # If both attempts fail: role-based hardcoded fallback questions
+```
+
+**Technique — Assistant Priming:** The assistant response is pre-filled with `"["` to force the model to complete a JSON array rather than output free text. Combined with `stop: ["\n\n"]`, this reliably produces parseable output.
+
+**Fallback:** If both LLM attempts return empty or invalid JSON, role-appropriate hardcoded questions (`_fallback_followups`) are used instead of returning nothing.
+
+The follow-ups are included in:
+- **Streaming response:** `sources` SSE event → `data.followups`
+- **Non-streaming response:** `ChatResponse.followups`
+
+The frontend displays them as clickable chips below each bot message. Clicking a chip populates the input box for the user to send.
+
 ## Lifecycle
 
 ```

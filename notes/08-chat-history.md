@@ -138,11 +138,18 @@ await apiFetch(`/conversations/${convId}/messages`, {
 
 ### Title Auto-Naming
 
-When the first user message in a conversation is saved, the message text is used as the conversation title (truncated to 60 chars):
+When the first user message in a conversation is saved, the message text is used as the conversation title (truncated to 55 chars + `…`):
+
+**Backend:** `ContextManager.save_turn()` detects the first turn and calls `update_conversation_title(conversation_id, question[:60], username)`.
+
+**Frontend:** After a stream completes, the sidebar title is immediately updated in local state from `"New Chat"` to the question text, so users don't need to refresh to see the correct title.
 
 ```python
-if body.get("type") == "user":
-    update_conversation_title(conversation_id, body.get("text", "")[:60], username)
+# context_manager.py
+def save_turn(self, question: str, answer: str, usage: dict | None = None) -> None:
+    ...
+    if is_first_turn:
+        update_conversation_title(self.conversation_id, question[:60], self.username)
 ```
 
 ## Comparison: Backend SQLite vs localStorage

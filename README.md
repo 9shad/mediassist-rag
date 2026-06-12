@@ -194,23 +194,14 @@ python scripts/ingest.py --dry-run
 
 ## Screenshots
 
-> Add screenshots here by placing image files in a `screenshots/` directory
-> and referencing them with standard markdown:
->
 > ```markdown
 > ![Login Screen](./screenshots/login.png)
 > ![Chat Interface](./screenshots/chat-interface.png)
-> ![Streaming Response](./screenshots/streaming.png)
-> ![Dark Mode](./screenshots/dark-mode.png)
+> ![Response with Followup Suggestions](./screenshots/streaming.png)
+> ![Response with Followup Suggestions](./screenshots/streaming-followup.png)
 > ![History Sidebar](./screenshots/history-sidebar.png)
+> ![Light Mode](./screenshots/light-mode.png)
 > ```
->
-> To capture screenshots:
-> 1. Open the app at `http://localhost:3000`
-> 2. Use the browser's dev tools responsive mode (optional)
-> 3. Use your OS screenshot tool (Cmd+Shift+4 on macOS, Snipping Tool on Windows)
-> 4. Save PNG files to `screenshots/` in the project root
-> 5. Commit and push — GitHub renders them automatically
 
 ## Demo Credentials
 
@@ -316,10 +307,12 @@ SQL RAG is restricted to `billing_executive` and `admin` roles only.
 - **Markdown formatting** — rendered responses with bold, lists, code blocks, etc.
 - **Source citations** — collapsible per-response showing document, section, and collection
 - **Retrieval type label** — shows "Hybrid RAG" or "SQL RAG" on each bot response
-- **Chat history** — conversations persisted in backend SQLite (`mediassist_chats.db`), create/switch/delete via sidebar
+- **Chat history** — conversations persisted in backend SQLite (`mediassist_chats.db`), create/switch/delete via sidebar with confirmation dialog; hover-reveal trash icon for each conversation
 - **Multi-turn context** — sliding window (last 8 turns) + vector memory (semantic search over all history) + running summary of evicted content
 - **Auto-cleanup** — old conversations (default 30 days) auto-deleted via background task
 - **Token usage** — per-response token count displayed as a small footer on each bot message
+- **Follow-up suggestions** — LLM generates 3 contextual follow-up questions after each response, shown as clickable chips
+- **Role-based suggestions** — welcome screen prompts tailored to the user's role and permitted collections
 - **Login screen** — themed dropdown for all 5 demo users with preview card
 
 ## Context Management
@@ -414,6 +407,31 @@ For detailed explanations of each concept, see the [`notes/`](./notes/) director
 | [`09-authentication.md`](./notes/09-authentication.md) | JWT login, role embedding, token verification |
 | [`10-system-architecture.md`](./notes/10-system-architecture.md) | End-to-end architecture, data flow, Docker setup |
 | [`11-context-management.md`](./notes/11-context-management.md) | Multi-turn context with sliding window, vector memory, summarization |
+
+### Chat Response Format (with follow-ups)
+
+```json
+{
+  "answer": "Based on the retrieved documents...",
+  "sources": [
+    {
+      "source_document": "treatment_protocols.pdf",
+      "section_title": "Malaria Treatment",
+      "collection": "clinical"
+    }
+  ],
+  "retrieval_type": "hybrid_rag",
+  "role": "doctor",
+  "usage": { "prompt_tokens": 450, "completion_tokens": 120, "total_tokens": 570 },
+  "followups": [
+    "What is the pediatric dosage for malaria?",
+    "Are there contraindications with other medications?",
+    "How long does the treatment typically last?"
+  ]
+}
+```
+
+Follow-up questions are also included in the streaming `sources` SSE event as `data.followups`.
 
 ## Evaluation Criteria Coverage
 

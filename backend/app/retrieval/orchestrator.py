@@ -6,7 +6,7 @@ from loguru import logger
 
 from app.core.context_manager import ContextManager
 from app.core.enums import RetrievalType, Role, SQL_RAG_ROLES
-from app.core.llm_client import generate_answer, generate_answer_stream
+from app.core.llm_client import generate_answer, generate_answer_stream, generate_followups
 from app.models.chat import ChatResponse, Source
 from app.retrieval.hybrid_retriever import hybrid_retrieve
 from app.retrieval.reranker import rerank
@@ -101,11 +101,14 @@ def process_query(
         ctx.save_turn(question, answer)
         ctx.condense_if_needed()
 
+    followups = generate_followups(question, answer, context)
+
     return ChatResponse(
         answer=answer,
         sources=sources,
         retrieval_type=RetrievalType.HYBRID_RAG.value,
         role=role,
+        followups=followups,
     )
 
 
@@ -135,8 +138,9 @@ def process_query_stream(
         if ctx:
             ctx.save_turn(question, answer)
             ctx.condense_if_needed()
+        followups = generate_followups(question, answer)
         yield f"event: answer\ndata: {json.dumps(answer)}\n\n"
-        yield f"event: sources\ndata: {json.dumps({'sources': [{'source_document': 'mediassist.db', 'section_title': 'SQL Query Result', 'collection': 'database'}], 'retrieval_type': RetrievalType.SQL_RAG.value, 'role': role})}\n\n"
+        yield f"event: sources\ndata: {json.dumps({'sources': [{'source_document': 'mediassist.db', 'section_title': 'SQL Query Result', 'collection': 'database'}], 'retrieval_type': RetrievalType.SQL_RAG.value, 'role': role, 'followups': followups})}\n\n"
         return
 
     logger.info(f"Routing to Hybrid RAG: role={role}, question='{question[:60]}...'")
@@ -148,7 +152,7 @@ def process_query_stream(
             ctx.save_turn(question, msg)
             ctx.condense_if_needed()
         yield f"event: answer\ndata: {json.dumps(msg)}\n\n"
-        yield f"event: sources\ndata: {json.dumps({'sources': [], 'retrieval_type': RetrievalType.HYBRID_RAG.value, 'role': role})}\n\n"
+        yield f"event: sources\ndata: {json.dumps({'sources': [], 'retrieval_type': RetrievalType.HYBRID_RAG.value, 'role': role, 'followups': []})}\n\n"
         return
 
     reranked = rerank(question, candidates, top_n=3)
@@ -179,4 +183,6 @@ def process_query_stream(
         ctx.save_turn(question, full_answer, usage)
         ctx.condense_if_needed()
 
-    yield f"event: sources\ndata: {json.dumps({'sources': [s.model_dump() for s in sources], 'retrieval_type': RetrievalType.HYBRID_RAG.value, 'role': role, 'usage': usage})}\n\n"
+    followups = generate_followups(question, full_answer, context)
+
+    yield f"event: sources\ndata: {json.dumps({'sources': [s.model_dump() for s in sources], 'retrieval_type': RetrievalType.HYBRID_RAG.value, 'role': role, 'usage': usage, 'followups': followups})}\n\n"

@@ -45,7 +45,7 @@ Rules:
 - Return raw numbers — don't format.
 """
 
-SQL_SYSTEM_PROMPT = """You are a SQL expert. Given a natural language question and a database schema, generate a SQLite SQL query to answer it. Return ONLY the SQL query, no explanation, no markdown formatting."""
+SQL_SYSTEM_PROMPT = """You are a SQLite expert. Given a question and schema, output ONLY a valid SQLite SQL query. No explanation, no markdown, no backticks. Start directly with SELECT."""
 
 
 def sql_rag_chain(question: str) -> str:
@@ -54,6 +54,11 @@ def sql_rag_chain(question: str) -> str:
     logger.debug(f"Generated SQL: {cleaned_sql}")
 
     results = _execute_sql(cleaned_sql)
+
+    if results and isinstance(results[0], dict) and "error" in results[0]:
+        logger.error(f"SQL execution error: {results[0]['error']}")
+        return _handle_sql_error(question)
+
     logger.debug(f"SQL results: {results}")
 
     answer = _generate_answer_from_results(question, cleaned_sql, results)
@@ -61,33 +66,60 @@ def sql_rag_chain(question: str) -> str:
 
 
 FALLBACK_SQL_PATTERNS = [
-    (r"(?i)(how many|count of|total number of)\s+claims.*approved", "SELECT COUNT(*) FROM claims WHERE status = 'Approved'"),
-    (r"(?i)(how many|count of|total number of)\s+claims.*denied", "SELECT COUNT(*) FROM claims WHERE status = 'Denied'"),
-    (r"(?i)(how many|count of|total number of)\s+claims.*pending", "SELECT COUNT(*) FROM claims WHERE status = 'Pending'"),
-    (r"(?i)(how many|count of|total number of)\s+claims.*escalat", "SELECT COUNT(*) FROM claims WHERE status = 'Escalated'"),
+    (r"(?i)how many\s+claims.*approved", "SELECT COUNT(*) FROM claims WHERE status = 'Approved'"),
+    (r"(?i)how many\s+claims.*denied", "SELECT COUNT(*) FROM claims WHERE status = 'Denied'"),
+    (r"(?i)how many\s+claims.*pending", "SELECT COUNT(*) FROM claims WHERE status = 'Pending'"),
+    (r"(?i)how many\s+claims.*escalat", "SELECT COUNT(*) FROM claims WHERE status = 'Escalated'"),
     (r"(?i)total\s+(claim|approved|denied)\s+amount", "SELECT SUM(claimed_amount) as total_claimed, SUM(approved_amount) as total_approved FROM claims"),
     (r"(?i)average\s+claim", "SELECT AVG(claimed_amount) as avg_claim FROM claims"),
     (r"(?i)most\s+common\s+diagnosis", "SELECT diagnosis_code, COUNT(*) as count FROM claims GROUP BY diagnosis_code ORDER BY count DESC LIMIT 5"),
-    (r"(?i)claims\s+by\s+department", "SELECT department, COUNT(*) as count, SUM(claimed_amount) as total FROM claims GROUP BY department"),
-    (r"(?i)(how many|count of|total number of)\s+maintenance.*ticket", "SELECT COUNT(*) FROM maintenance_tickets"),
-    (r"(?i)(open|in progress)\s+tickets?\s+by\s+category", "SELECT category, COUNT(*) as count FROM maintenance_tickets WHERE status IN ('Open', 'In Progress') GROUP BY category"),
+    (r"(?i)claims?\s+by\s+department", "SELECT department, COUNT(*) as count, SUM(claimed_amount) as total FROM claims GROUP BY department"),
+    (r"(?i)how many\s+maintenance.*ticket", "SELECT COUNT(*) FROM maintenance_tickets"),
+    (r"(?i)(open|in progress).*tickets?\s+by\s+category", "SELECT category, COUNT(*) as count FROM maintenance_tickets WHERE status IN ('Open', 'In Progress') GROUP BY category"),
+    (r"(?i)list\s+(all\s+)?(open|in progress)\s+.*tickets?", "SELECT * FROM maintenance_tickets WHERE status IN ('Open', 'In Progress') ORDER BY category"),
     (r"(?i)most\s+common\s+(issue|fault).*equipment", "SELECT issue_type, COUNT(*) as count FROM maintenance_tickets GROUP BY issue_type ORDER BY count DESC LIMIT 5"),
     (r"(?i)equipment.*category.*most.*ticket", "SELECT category, COUNT(*) as count FROM maintenance_tickets GROUP BY category ORDER BY count DESC LIMIT 1"),
+    (r"(?i)list\s+all\s+(claims|tickets)", "SELECT * FROM claims LIMIT 10"),
 ]
 
 
 def _generate_sql(question: str) -> str:
+    for pattern, sql in FALLBACK_SQL_PATTERNS:
+        if re.search(pattern, question):
+            logger.info(f"Using fallback SQL for: {pattern[0]}")
+            return sql
+
     if not settings.llm_api_key:
-        for pattern, sql in FALLBACK_SQL_PATTERNS:
-            if re.search(pattern, question):
-                logger.info(f"Using fallback SQL for: {pattern[0]}")
-                return sql
-        return f"SELECT 'Unable to generate SQL without LLM API key for: {question}'"
-    return generate_answer(
-        question=f"{SCHEMA_DESCRIPTION}\n\nQuestion: {question}\nSQL Query:",
-        system_prompt=SQL_SYSTEM_PROMPT,
-        max_tokens=256,
-    )
+        return "SELECT 'Unable to generate SQL without LLM API key'"
+
+    prompt = f"Question: {question}\n\nSchema:\n{SCHEMA_DESCRIPTION}\n\nSQL Query:"
+    try:
+        import httpx
+        response = httpx.post(
+            f"{settings.llm_base_url}/chat/completions",
+            headers={"Authorization": f"Bearer {settings.llm_api_key}"},
+            json={
+                "model": settings.llm_model,
+                "messages": [
+                    {"role": "system", "content": SQL_SYSTEM_PROMPT + " Valid SQL only."},
+                    {"role": "user", "content": prompt + "\n\nSELECT"},
+                ],
+                "max_tokens": 256,
+                "temperature": 0.1,
+            },
+            timeout=15,
+        )
+        response.raise_for_status()
+        text = response.json()["choices"][0]["message"]["content"]
+        if not text or not text.strip():
+            return "SELECT 'Unable to generate SQL query'"
+        sql = text.strip()
+        if ";" in sql:
+            sql = sql[: sql.index(";") + 1]
+        return sql
+    except Exception as e:
+        logger.debug(f"SQL generation via LLM failed: {e}")
+        return "SELECT 'Unable to generate SQL query'"
 
 
 def _clean_sql(raw: str) -> str:
@@ -95,20 +127,26 @@ def _clean_sql(raw: str) -> str:
     sql = re.sub(r"^```sql\s*", "", sql, flags=re.IGNORECASE)
     sql = re.sub(r"^```", "", sql)
     sql = re.sub(r"```$", "", sql)
-    sql_match = re.search(r"(SELECT\s+.+)", sql, re.IGNORECASE | re.DOTALL)
+
+    sql_match = re.search(r"(SELECT\s+[\w\*\(\),\.\s'\"=<>!]+\s*(?:FROM\s+[\w\s,]+(?:\s+WHERE\s+[\w\s\.'\"=<>!]+(?:\s+(?:AND|OR)\s+[\w\s\.'\"=<>!]+)*)?(?:\s+GROUP\s+BY\s+[\w\s,]+)?(?:\s+ORDER\s+BY\s+[\w\s,]+(?:\s+(?:ASC|DESC))?)?(?:\s+LIMIT\s+\d+(?:\s+OFFSET\s+\d+)?)?\s*;?)?)", sql, re.IGNORECASE)
     if sql_match:
         sql = sql_match.group(1)
+
     sql = sql.strip().rstrip(";") + ";"
-    if not re.match(r"^\s*SELECT", sql, re.IGNORECASE):
+
+    if not re.match(r"^\s*SELECT\s+(FROM\s+\w+|[\w\*\(\),\.\s])", sql, re.IGNORECASE):
+        logger.warning(f"Invalid SQL (not a SELECT): {sql[:80]}")
         return "SELECT 'Only SELECT queries are allowed';"
+
     return sql
 
 
-def _execute_sql(sql: str) -> list[tuple]:
+def _execute_sql(sql: str) -> list[dict]:
     db_path = Path(settings.database_path)
     if not db_path.exists():
         logger.warning(f"Database not found at {db_path}")
-        return [("Database not available",)]
+        return [{"error": "database_not_found"}]
+
     conn = sqlite3.connect(str(db_path))
     conn.row_factory = sqlite3.Row
     try:
@@ -116,8 +154,7 @@ def _execute_sql(sql: str) -> list[tuple]:
         cursor.execute(sql)
         rows = cursor.fetchall()
         columns = [desc[0] for desc in cursor.description] if cursor.description else []
-        result = [dict(zip(columns, row)) for row in rows]
-        return result
+        return [dict(zip(columns, row)) for row in rows]
     except Exception as e:
         logger.error(f"SQL execution error: {e}")
         return [{"error": str(e)}]
@@ -127,20 +164,23 @@ def _execute_sql(sql: str) -> list[tuple]:
 
 def _generate_answer_from_results(question: str, sql: str, results: list[dict]) -> str:
     if not settings.llm_api_key:
-        formatted = _format_results(question, sql, results)
-        return f"(SQL RAG — LLM API not configured)\n{formatted}"
+        return _format_results(question, results)
 
     prompt = (
         f"Question: {question}\n\n"
-        f"SQL Query Used: {sql}\n\n"
         f"Query Results: {results}\n\n"
-        f"Provide a clear, concise natural language answer based on these results."
+        f"Provide a clear, concise natural language answer based on these results. "
+        f"Do NOT include the SQL query or any query syntax in your response."
     )
-    return generate_answer(question=prompt, max_tokens=512)
+    return generate_answer(
+        question=prompt,
+        system_prompt="You answer database queries in plain natural language. Never show SQL or technical query details.",
+        max_tokens=512,
+    )
 
 
-def _format_results(question: str, sql: str, results: list[dict]) -> str:
-    lines = [f"Query: {question}", f"SQL: {sql}", ""]
+def _format_results(question: str, results: list[dict]) -> str:
+    lines = [f"Query results for: {question}", ""]
     if results and isinstance(results[0], dict):
         headers = list(results[0].keys())
         lines.append(" | ".join(str(h) for h in headers))
@@ -150,3 +190,15 @@ def _format_results(question: str, sql: str, results: list[dict]) -> str:
     else:
         lines.append(str(results))
     return "\n".join(lines)
+
+
+def _handle_sql_error(question: str) -> str:
+    for pattern, sql in FALLBACK_SQL_PATTERNS:
+        if re.search(pattern, question):
+            logger.info(f"Retrying with fallback SQL for: {pattern[0]}")
+            cleaned_sql = _clean_sql(sql)
+            results = _execute_sql(cleaned_sql)
+            if results and isinstance(results[0], dict) and "error" not in results[0]:
+                return _generate_answer_from_results(question, cleaned_sql, results)
+            break
+    return "I encountered an error while querying the database. Please try rephrasing your question."

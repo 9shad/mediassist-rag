@@ -27,10 +27,12 @@ Query Router (orchestrator.py)
     ▼
 sql_rag_chain()
     │
-    ├── 1. SQL Generation ──► LLM generates SQL
-    ├── 2. SQL Cleaning ──► Regex strips markdown, validates
+    ├── 1. SQL Generation ──► Fallback regex patterns first, LLM as fallback
+    │                        (both produce a SQL SELECT query from plain text)
+    ├── 2. SQL Cleaning ──► Regex strips markdown, validates SELECT-only
     ├── 3. SQL Execution ──► sqlite3 against mediassist.db
-    └── 4. Answer Generation ──► LLM turns results into answer
+    └── 4. Answer Generation ──► LLM turns results into natural language
+                                 (SQL query excluded from prompt — guardrail)
 ```
 
 ## Implementation
@@ -62,64 +64,44 @@ SQL_RAG_ROLES: set[Role] = {Role.BILLING_EXECUTIVE, Role.ADMIN}
 
 ### Step 2: SQL Generation
 
-The LLM receives the database schema and the natural language question:
+The LLM receives the database schema and the natural language question. To force the model to output valid SQL (not descriptive text), the assistant response is primed with `"SELECT"` so the model completes a SQL statement rather than explaining it:
 
 ```python
-SCHEMA_DESCRIPTION = """
-Database: mediassist.db
+def _generate_sql(question: str) -> str:
+    # Try fallback patterns FIRST
+    for pattern, sql in FALLBACK_SQL_PATTERNS:
+        if re.search(pattern, question):
+            return sql
 
-Table: claims
-  - claim_id (TEXT PRIMARY KEY)
-  - patient_id (TEXT)
-  - patient_name (TEXT)
-  - department (TEXT)
-  - claim_type (TEXT) — e.g. Insurance, TPA, Cashless
-  - diagnosis_code (TEXT) — ICD code
-  - insurer (TEXT)
-  - claimed_amount (REAL)
-  - approved_amount (REAL)
-  - status (TEXT) — e.g. Approved, Denied, Pending, Escalated
-  - submitted_date (TEXT) — ISO date
-  - resolved_date (TEXT) — ISO date, nullable
-
-Table: maintenance_tickets
-  - ticket_id (TEXT PRIMARY KEY)
-  - equipment_name (TEXT)
-  - equipment_id (TEXT)
-  - category (TEXT)
-  - campus (TEXT)
-  - issue_type (TEXT)
-  - fault_code (TEXT)
-  - raised_by (TEXT)
-  - raised_date (TEXT) — ISO date
-  - resolved_date (TEXT) — ISO date, nullable
-  - status (TEXT)
-  - resolution_note (TEXT)
-
-Rules:
-- Use only SELECT queries.
-- Use date functions: date(), strftime(), julianday().
-- Use GROUP BY for aggregations.
-"""
-
-SQL_SYSTEM_PROMPT = "You are a SQL expert... Return ONLY the SQL query, no explanation."
+    # LLM with assistant priming as fallback
+    response = httpx.post(
+        f"{settings.llm_base_url}/chat/completions",
+        json={
+            "messages": [
+                {"role": "system", "content": "Output ONLY valid SQL."},
+                {"role": "user", "content": prompt + "\n\nSELECT"},
+            ],
+        },
+    )
+    text = response.json()["choices"][0]["message"]["content"]
+    return "SELECT" + (text or "")
 ```
 
-The LLM sees the full schema with column types and example values, then generates a SQL query.
+#### Fallback Pattern Matching (Tried First)
 
-#### Fallback Pattern Matching
-
-If no LLM API key is configured, the system uses hardcoded regex patterns:
+Fallback patterns are checked **before** the LLM to ensure common queries work reliably regardless of LLM behavior:
 
 ```python
 FALLBACK_SQL_PATTERNS = [
     (r"(?i)(how many|count of)\s+claims.*approved",
      "SELECT COUNT(*) FROM claims WHERE status = 'Approved'"),
-    (r"(?i)total\s+(claim|approved|denied)\s+amount",
-     "SELECT SUM(claimed_amount)..."),
-    # ... 12 patterns covering common queries
+    (r"(?i)list\s+(all\s+)?(open|in progress)\s+.*tickets?",
+     "SELECT * FROM maintenance_tickets WHERE status IN ('Open', 'In Progress') ORDER BY category"),
+    # ... 14 patterns covering common queries
 ]
 ```
+
+If the LLM generates invalid SQL that fails at execution time, the system automatically retries with fallback patterns via `_handle_sql_error()`.
 
 ### Step 3: SQL Cleaning
 
@@ -169,21 +151,26 @@ The cleaned SQL is executed against the SQLite database at `mediassist_data/medi
 def _generate_answer_from_results(question: str, sql: str, results: list[dict]) -> str:
     prompt = (
         f"Question: {question}\n\n"
-        f"SQL Query Used: {sql}\n\n"
         f"Query Results: {results}\n\n"
-        f"Provide a clear, concise natural language answer based on these results."
+        f"Provide a clear, concise natural language answer based on these results. "
+        f"Do NOT include the SQL query in your response."
     )
-    return generate_answer(question=prompt, max_tokens=512)
+    return generate_answer(
+        question=prompt,
+        system_prompt="You answer database queries in plain natural language. Never show SQL or technical query details.",
+        max_tokens=512,
+    )
 ```
 
-The LLM receives the original question, the SQL query, and the results, and produces a natural language response. If no LLM is configured, results are formatted as a simple table.
+The LLM receives the original question and the results only — **the SQL query is never passed to the answer generator**. This prevents the LLM from accidentally including SQL syntax in user-facing responses (a key guardrail). If no LLM is configured, results are formatted as a simple table.
 
 ## Security Considerations
 
 1. **SELECT-only constraint**: The system rejects any non-SELECT query (prevents INSERT, UPDATE, DELETE, DROP)
-2. **Role restriction**: Only `billing_executive` and `admin` can trigger SQL RAG — others get Hybrid RAG regardless of query content
-3. **Read-only database**: The SQLite file is mounted read-only in the Docker volume
-4. **Query sanitization**: The `_clean_sql` function strips anything before the SELECT statement, preventing injection via prompt manipulation
+2. **SQL never shown to users**: The SQL query is excluded from the answer generation prompt — the LLM receives only question + results
+3. **Role restriction**: Only `billing_executive` and `admin` can trigger SQL RAG — others get Hybrid RAG regardless of query content
+4. **Read-only database**: The SQLite file is mounted read-only in the Docker volume
+5. **Query sanitization**: The `_clean_sql` function strips anything before the SELECT statement, preventing injection via prompt manipulation
 
 ## Example Flow
 

@@ -183,6 +183,106 @@ def generate_answer_stream(
         yield "answer", _fallback_answer(question, context)
 
 
+FOLLOWUP_PROMPT = """Output 3 numbered follow-up questions. No thinking. No tags. Just:
+
+1. first question
+2. second question
+3. third question"""
+
+
+def _strip_think(text: str) -> str:
+    return re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL).strip()
+
+
+def _parse_followups(text: str) -> list[str] | None:
+    text = _strip_think(text.strip())
+    lines = [l.strip() for l in text.replace("\r", "").split("\n") if l.strip()]
+    seen = []
+    for line in lines:
+        clean = re.sub(r"^\d+[.)]\s*", "", line).strip()
+        clean = re.sub(r"^[-*]\s+", "", clean).strip()
+        clean = clean.strip('"\'').strip()
+        if clean and len(clean) > 5 and clean not in seen:
+            seen.append(clean)
+        if len(seen) >= 3:
+            return seen
+    if seen:
+        return seen
+    return None
+
+
+def generate_followups(question: str, answer: str, context: str = "") -> list[str]:
+    if not settings.llm_api_key:
+        return []
+    prompt = question
+    for attempt in range(2):
+        try:
+            response = httpx.post(
+                f"{settings.llm_base_url}/chat/completions",
+                headers={"Authorization": f"Bearer {settings.llm_api_key}"},
+                json={
+                    "model": settings.llm_model,
+                    "messages": [
+                        {"role": "system", "content": FOLLOWUP_PROMPT},
+                        {"role": "user", "content": prompt},
+                        {"role": "assistant", "content": "1. What"},
+                    ],
+                    "max_tokens": 120,
+                    "temperature": 0.7,
+                    "stop": ["\n\n\n", "4."],
+                },
+                timeout=15,
+            )
+            response.raise_for_status()
+            text = response.json()["choices"][0]["message"]["content"]
+            if not text or not text.strip():
+                logger.debug(f"Followup attempt {attempt+1}: empty response")
+                continue
+            text = "1. What" + text
+            parsed = _parse_followups(text)
+            if parsed:
+                return parsed
+        except Exception as e:
+            logger.debug(f"Followup attempt {attempt+1} failed: {e}")
+    return _fallback_followups(question)
+
+_fallback_qs: dict[str, list[str]] = {
+    "doctor": [
+        "What are the contraindications?",
+        "What is the recommended dosage?",
+        "How long does treatment typically last?",
+    ],
+    "nurse": [
+        "What are the key warning signs to watch for?",
+        "How often should vital signs be checked?",
+        "What equipment is needed for this procedure?",
+    ],
+    "billing_executive": [
+        "What are the billing code requirements?",
+        "How are claims typically processed?",
+        "What documentation is needed for approval?",
+    ],
+    "technician": [
+        "What is the recommended maintenance schedule?",
+        "What are common error codes?",
+        "What safety precautions should be followed?",
+    ],
+    "admin": [
+        "What are the key metrics to track?",
+        "Which departments need attention?",
+        "What reports are available for review?",
+    ],
+}
+
+def _fallback_followups(question: str) -> list[str]:
+    where_keywords = {"doctor": "doctor", "nurse": "nurse", "billing": "billing_executive",
+                      "technician": "technician", "admin": "admin"}
+    for kw, role in where_keywords.items():
+        if kw in question.lower():
+            return _fallback_qs[role]
+    return _fallback_qs["nurse"]
+
+
 def _fallback_answer(question: str, context: str = "") -> str:
     if context:
         context_preview = context[:300]

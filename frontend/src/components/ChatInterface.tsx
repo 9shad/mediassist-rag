@@ -9,7 +9,7 @@ interface TokenUsage { total_tokens: number; prompt_tokens: number; completion_t
 
 interface Message {
   id: string; type: 'user' | 'bot'; text: string; thinkText?: string
-  sources?: Source[]; retrievalType?: string; usage?: TokenUsage
+  sources?: Source[]; retrievalType?: string; usage?: TokenUsage; followups?: string[]
 }
 
 interface Conversation {
@@ -32,6 +32,39 @@ const ROLE_COLORS: Record<string, string> = {
 const ROLE_LABELS: Record<string, string> = {
   doctor: 'Doctor', nurse: 'Nurse', billing_executive: 'Billing Executive',
   technician: 'Technician', admin: 'Admin',
+}
+
+const ROLE_SUGGESTIONS: Record<string, string[]> = {
+  doctor: [
+    'What is the malaria treatment protocol?',
+    'What are the infection control procedures for ICU?',
+    'List the symptoms of severe dengue',
+    'What is the standard nursing care for post-surgery patients?',
+  ],
+  nurse: [
+    'What is the standard nursing care for post-surgery patients?',
+    'How do I monitor vital signs for ICU patients?',
+    'What are the infection control procedures?',
+    'What is the protocol for administering blood products?',
+  ],
+  billing_executive: [
+    'How many claims were approved this month?',
+    'What is the total claimed amount by department?',
+    'Show me insurance billing codes for cardiology',
+    'List all pending claims and their status',
+  ],
+  technician: [
+    'How do I calibrate the MRI machine?',
+    'What is the maintenance schedule for X-ray equipment?',
+    'List common fault codes for ventilators',
+    'How do I troubleshoot the CT scanner error E-47?',
+  ],
+  admin: [
+    'How many approved claims across all departments?',
+    'What is the equipment maintenance status?',
+    'Show me the clinical protocol for malaria treatment',
+    'List all open maintenance tickets by category',
+  ],
 }
 
 const API_PREFIX = '/api/v1'
@@ -106,8 +139,9 @@ export default function ChatInterface({ token, role, username, name, collections
       setActiveId(conv.id)
       setMessages([])
       inputRef.current?.focus()
-      setHistoryOpen(false)
-    } catch {}
+    } catch (e) {
+      console.error('Failed to create conversation:', e)
+    }
   }
 
   const switchConversation = (id: string) => {
@@ -116,6 +150,8 @@ export default function ChatInterface({ token, role, username, name, collections
 
   const deleteConversation = async (e: React.MouseEvent, id: string) => {
     e.stopPropagation()
+    const conv = conversations.find((c) => c.id === id)
+    if (!confirm(`Delete "${conv?.title || 'untitled'}" and all its messages?`)) return
     try {
       await apiFetch(`/conversations/${id}`, { method: 'DELETE' }, token)
       setConversations((prev) => prev.filter((c) => c.id !== id))
@@ -183,6 +219,7 @@ export default function ChatInterface({ token, role, username, name, collections
               botMsg.sources = data.sources
               botMsg.retrievalType = data.retrieval_type === 'hybrid_rag' ? 'Hybrid RAG' : 'SQL RAG'
               botMsg.usage = data.usage
+              botMsg.followups = data.followups
             }
             setMessages((prev) => prev.map((m) => (m.id === botMsg.id ? { ...botMsg } : m)))
             eventType = ''
@@ -191,6 +228,12 @@ export default function ChatInterface({ token, role, username, name, collections
         }
       }
 
+      // Update title in sidebar after first message
+      setConversations((prev) => prev.map((c) =>
+        c.id === convId && c.title === 'New Chat'
+          ? { ...c, title: question.length > 55 ? question.slice(0, 55) + '…' : question }
+          : c
+      ))
     } catch {
       botMsg.text = 'Sorry, I encountered an error processing your request.'
       setMessages((prev) => prev.map((m) => (m.id === botMsg.id ? { ...botMsg } : m)))
@@ -212,9 +255,10 @@ export default function ChatInterface({ token, role, username, name, collections
             <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M3 12h18M3 6h18M3 18h18"/></svg>
           </button>
           <div className="logo">
-            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-              <path d="M12 2a4 4 0 014 4c0 2-2 4-4 4s-4-2-4-4 2-4 4-4z"/>
-              <path d="M16 14c2 0 4 2 4 4v2H4v-2c0-2 2-4 4-4"/>
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M9 12h6M12 9v6"/>
+              <rect x="3" y="3" width="18" height="18" rx="5"/>
+              <path d="M7 7h10v10H7z" fill="none"/>
             </svg>
             <span className="logo-text">MediBot</span>
           </div>
@@ -265,8 +309,8 @@ export default function ChatInterface({ token, role, username, name, collections
                   <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/></svg>
                   <span className="history-item-title">{conv.title}</span>
                 </div>
-                <button className="icon-btn delete-btn" onClick={(e) => deleteConversation(e, conv.id)} title="Delete">
-                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M18 6L6 18M6 6l12 12"/></svg>
+                <button className="delete-conv-btn" onClick={(e) => deleteConversation(e, conv.id)} title="Delete conversation">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M3 6h18M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2M10 11v6M14 11v6"/></svg>
                 </button>
               </div>
             ))}
@@ -277,20 +321,15 @@ export default function ChatInterface({ token, role, username, name, collections
           {messages.length === 0 ? (
             <div className="welcome">
               <div className="welcome-icon">
-                <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
-                  <path d="M12 2a4 4 0 014 4c0 2-2 4-4 4s-4-2-4-4 2-4 4-4z"/>
-                  <path d="M16 14c2 0 4 2 4 4v2H4v-2c0-2 2-4 4-4"/>
+                <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M9 12h6M12 9v6"/>
+                  <rect x="2" y="2" width="20" height="20" rx="5"/>
                 </svg>
               </div>
               <h2>Welcome to MediBot</h2>
-              <p>Ask a question about clinical protocols, billing, equipment, or policies.</p>
+              <p>Ask a question about your permitted collections: {collections.join(', ')}.</p>
               <div className="welcome-suggestions">
-                {[
-                  'What is the malaria treatment protocol?',
-                  'How do I calibrate the MRI machine?',
-                  'Show me insurance billing codes',
-                  'What are the infection control procedures?',
-                ].map((s) => (
+                {(ROLE_SUGGESTIONS[role] || ROLE_SUGGESTIONS.admin).map((s) => (
                   <button key={s} className="suggestion-chip" onClick={() => { setInput(s); inputRef.current?.focus() }}>{s}</button>
                 ))}
               </div>
@@ -326,6 +365,13 @@ export default function ChatInterface({ token, role, username, name, collections
                     )}
                     {msg.usage && (
                       <div className="usage-footer">{msg.usage.total_tokens} tokens · {msg.usage.prompt_tokens} prompt · {msg.usage.completion_tokens} completion</div>
+                    )}
+                    {msg.type === 'bot' && msg.followups && msg.followups.length > 0 && (
+                      <div className="followup-chips">
+                        {msg.followups.map((f, i) => (
+                          <button key={i} className="followup-chip" onClick={() => { setInput(f); inputRef.current?.focus() }}>{f}</button>
+                        ))}
+                      </div>
                     )}
                   </div>
                 </div>
@@ -403,8 +449,9 @@ export default function ChatInterface({ token, role, username, name, collections
         .history-item-content { display: flex; align-items: center; gap: 8px; flex: 1; min-width: 0; }
         .history-item-content svg { flex-shrink: 0; color: var(--text-secondary); }
         .history-item-title { font-size: 13px; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-        .delete-btn { opacity: 0; transition: opacity 0.15s; flex-shrink: 0; width: 24px; height: 24px; }
-        .history-item:hover .delete-btn { opacity: 1; }
+        .delete-conv-btn { background: none; border: none; cursor: pointer; padding: 4px; border-radius: 4px; color: var(--text-secondary); opacity: 0; transition: all 0.15s; display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
+        .history-item:hover .delete-conv-btn { opacity: 0.5; }
+        .delete-conv-btn:hover { opacity: 1 !important; background: var(--bg-secondary); color: #e53e3e; }
         .chat-area { flex: 1; display: flex; flex-direction: column; background: var(--bg); min-width: 0; }
         .welcome { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 40px 24px; text-align: center; color: var(--text-secondary); }
         .welcome-icon { color: var(--text-secondary); margin-bottom: 16px; opacity: 0.5; }
@@ -458,6 +505,9 @@ export default function ChatInterface({ token, role, username, name, collections
         .send-btn:hover:not(:disabled) { background: var(--accent-hover); }
         .send-btn:disabled { opacity: 0.4; cursor: not-allowed; }
         .usage-footer { font-size: 10px; color: var(--text-secondary); margin-top: 6px; opacity: 0.6; }
+        .followup-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+        .followup-chip { padding: 6px 12px; border: 1px solid var(--border); border-radius: 12px; background: transparent; color: var(--text-secondary); font-size: 12px; cursor: pointer; transition: all 0.15s; }
+        .followup-chip:hover { border-color: var(--accent); color: var(--accent); background: var(--bg-secondary); }
       `}</style>
     </div>
   )

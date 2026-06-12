@@ -17,3 +17,4 @@ class ChatResponse(BaseModel):
     sources: list[Source] = []
     retrieval_type: str
     role: str
+    followups: list[str] = []
